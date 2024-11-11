@@ -1,192 +1,176 @@
 #include "sistemaComunicaciones.h"
-#include "noticia.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <errno.h>
-#include <sys/types.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <signal.h>
+#include <errno.h>
+#include <time.h>
 
-#define MAX_SUSCRIPTORES 100
-#define MAX_BUFFER 100
-Suscripcion *cabeza = NULL; // Inicialización de la lista enlazada
+#define MAX_BUFFER_NOTICIAS 100
 
-// Estructura para almacenar las suscripciones (definida en el .h)
+typedef struct {
+    Noticia noticias[MAX_BUFFER_NOTICIAS];
+    int inicio;
+    int fin;
+    int contador;
+} BufferCircular;
 
-Suscripcion suscriptores[MAX_SUSCRIPTORES];
-int numSuscriptores = 0;
+static char pipePublicador[256];
+static char pipeSuscriptor[256];
+static int tiempoForward;
+static volatile sig_atomic_t seguirEjecutando = 1;
+static BufferCircular buffer;
 
-// Variables globales para los nombres de los pipes
-char pipePSC[100];
-char pipeSSC[100];
-int tiempoEspera;
-
-// Función para obtener el nombre del pipe de un suscriptor
-char* obtenerPipeSuscriptor(int id) {
-    static char pipeName[100];
-    sprintf(pipeName, "pipe_suscriptor_%d", id);
-    return pipeName;
+void manejador_sigint(int sig) {
+    seguirEjecutando = 0;
 }
 
-void inicializarSistema(const char *pipePSCPath, const char *pipeSSCPath, int espera) {
-    strncpy(pipePSC, pipePSCPath, sizeof(pipePSC) - 1);
-    strncpy(pipeSSC, pipeSSCPath, sizeof(pipeSSC) - 1);
-    tiempoEspera = espera;
+void inicializarBuffer() {
+    buffer.inicio = 0;
+    buffer.fin = 0;
+    buffer.contador = 0;
+}
 
-    if (mkfifo(pipePSC, 0666) == -1 && errno != EEXIST) {
-        perror("Error al crear el pipe PSC");
+void agregarNoticia(const Noticia *noticia) {
+    if (buffer.contador < MAX_BUFFER_NOTICIAS) {
+        buffer.noticias[buffer.fin] = *noticia;
+        buffer.fin = (buffer.fin + 1) % MAX_BUFFER_NOTICIAS;
+        buffer.contador++;
+    }
+}
+
+int obtenerNoticia(Noticia *noticia) {
+    if (buffer.contador > 0) {
+        *noticia = buffer.noticias[buffer.inicio];
+        buffer.inicio = (buffer.inicio + 1) % MAX_BUFFER_NOTICIAS;
+        buffer.contador--;
+        return 1;
+    }
+    return 0;
+}
+
+void inicializarSistema(const char *pipePSC, const char *pipeSSC, int tiempoEspera) {
+    printf("Iniciando sistema de comunicaciones...\n");
+    
+    strncpy(pipePublicador, pipePSC, sizeof(pipePublicador) - 1);
+    strncpy(pipeSuscriptor, pipeSSC, sizeof(pipeSuscriptor) - 1);
+    tiempoForward = tiempoEspera;
+    
+    // Eliminar pipes si existen
+    unlink(pipePublicador);
+    unlink(pipeSuscriptor);
+
+    // Crear pipes nominales con manejo de errores
+    if (mkfifo(pipePublicador, 0666) == -1) {
+        fprintf(stderr, "Error creando pipe PSC: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-    if (mkfifo(pipeSSC, 0666) == -1 && errno != EEXIST) {
-        perror("Error al crear el pipe SSC");
+    
+    if (mkfifo(pipeSuscriptor, 0666) == -1) {
+        fprintf(stderr, "Error creando pipe SSC: %s\n", strerror(errno));
+        unlink(pipePublicador);
         exit(EXIT_FAILURE);
     }
+
+    inicializarBuffer();
+    printf("Sistema inicializado correctamente.\n");
+    printf("Pipe PSC: %s\nPipe SSC: %s\n", pipePublicador, pipeSuscriptor);
+    printf("Tiempo de reenvío: %d segundos\n", tiempoEspera);
 }
 
-void procesarNoticias() {
-    int fdPipePSC = open(pipePSC, O_RDONLY);
-    char buffer[MAX_BUFFER];
-    while (read(fdPipePSC, buffer, sizeof(buffer)) > 0) {
-        distribuirNoticias(buffer);
-    }
-    close(fdPipePSC);
-}
-
-void manejarSuscripciones() {
-    int fdPipeSSC = open(pipeSSC, O_RDONLY);
-    char buffer[MAX_BUFFER];
-    while (read(fdPipeSSC, buffer, sizeof(buffer)) > 0) {
-        Suscripcion nuevaSuscripcion;
-        if (strlen(buffer) <= MAX_TOPICOS && strspn(buffer, "AECPS") == strlen(buffer)) {
-            nuevaSuscripcion.id = numSuscriptores;
-            strncpy(nuevaSuscripcion.topicos, buffer, MAX_TOPICOS);
-            if (numSuscriptores < MAX_SUSCRIPTORES) {
-                suscriptores[numSuscriptores++] = nuevaSuscripcion;
-                char pipeName[100];
-                sprintf(pipeName, "pipe_suscriptor_%d", nuevaSuscripcion.id);
-                mkfifo(pipeName, 0666);
-            } else {
-                printf("Límite de suscriptores alcanzado.\n");
-            }
-        } else {
-            printf("Suscripción inválida.\n");
-        }
-    }
-    close(fdPipeSSC);
-}
-
-void distribuirNoticias(const char *noticia) {
-    char tipoNoticia = noticia[0];
-
-    for (int i = 0; i < numSuscriptores; i++) {
-        for (size_t j = 0; j < strlen(suscriptores[i].topicos); j++) {
-            if (suscriptores[i].topicos[j] == tipoNoticia) {
-                char* pipeSuscriptor = obtenerPipeSuscriptor(suscriptores[i].id);
-                int fdPipeSuscriptor = open(pipeSuscriptor, O_WRONLY);
-
-                if (fdPipeSuscriptor != -1) {
-                    if (write(fdPipeSuscriptor, noticia, strlen(noticia)) != (ssize_t)strlen(noticia)) {
-                        perror("Error al escribir en el pipe");
-
-                        // Cerrar el pipe
-                        close(fdPipeSuscriptor);
-
-                        // Registrar el error en un log
-                        FILE *log = fopen("error_log.txt", "a");
-                        if (log != NULL) {
-                            fprintf(log, "Error al distribuir noticia: %s\n", strerror(errno));
-                            fclose(log);
-                        } else {
-                            perror("Error al abrir el archivo de log");
-                        }
-
-                        // Intentar reescribir la noticia más tarde (opcional)
-                        // ... (implementar lógica para reintentar)
-
-                        // Notificar al administrador del sistema (opcional)
-                        // ... (implementar lógica para enviar una notificación)
-                    }
-                    close(fdPipeSuscriptor);
-                } else {
-                    perror("Error al abrir el pipe");
-                    // Aquí puedes agregar más acciones de manejo de errores, como:
-                    // - Eliminar al suscriptor de la lista
-                    // - Intentar volver a crear el pipe
+void reenviarNoticiasASuscriptores() {
+    int fdSSC = open(pipeSuscriptor, O_WRONLY | O_NONBLOCK);
+    if (fdSSC >= 0) {
+        Noticia noticia;
+        while (obtenerNoticia(&noticia)) {
+            ssize_t bytesEscritos = write(fdSSC, &noticia, sizeof(Noticia));
+            if (bytesEscritos == sizeof(Noticia)) {
+                printf("Reenviada noticia [%c]: %s\n", noticia.tipo, noticia.texto);
+                if (tiempoForward > 0) {
+                    sleep(tiempoForward);
                 }
             }
         }
+        close(fdSSC);
     }
 }
 
-void agregarSuscripcion(int id, const char *topicos) {
-    // Validar si el ID ya existe
-    Suscripcion* actual = cabeza;
-    while (actual != NULL) {
-        if (actual->id == id) {
-            printf("El ID de suscripción ya existe.\n");
-            return;
-        }
-        actual = actual->siguiente;
-    }
-
-    // Validar los tópicos
-    if (strlen(topicos) > MAX_TOPICOS - 1 || strspn(topicos, "AECPS") != strlen(topicos)) {
-        printf("Suscripción inválida.\n");
-        return;
-    }
-
-    // Crear un nuevo nodo para la lista enlazada
-    Suscripcion* nuevoNodo = (Suscripcion*)malloc(sizeof(Suscripcion));
-    nuevoNodo->id = id;
-    strncpy(nuevoNodo->topicos, topicos, MAX_TOPICOS);
-    nuevoNodo->siguiente = cabeza;
-    cabeza = nuevoNodo;
-
-    // Crear un pipe para el nuevo suscriptor
-    char pipeName[100];
-    sprintf(pipeName, "pipe_suscriptor_%d", id);
-    if (mkfifo(pipeName, 0666) == -1 && errno != EEXIST) {
-        perror("Error al crear el pipe del suscriptor");
-        // Liberar la memoria del nodo creado
-        free(nuevoNodo);
-        return;
-    }
-
-    printf("Nueva suscripción registrada: %s\n", topicos);
-}
-
-void eliminarSuscripcion(int id) {
-    Suscripcion *actual = cabeza;
-    Suscripcion *anterior = NULL;
-
-    // Recorremos la lista enlazada hasta encontrar el nodo con el id a eliminar
-    while (actual != NULL) {
-        if (actual->id == id) {
-            // Si el nodo a eliminar es el primero de la lista
-            if (anterior == NULL) {
-                cabeza = actual->siguiente; // Actualizamos el puntero a la cabeza
-            } else { // Si el nodo a eliminar está en medio o al final de la lista
-                anterior->siguiente = actual->siguiente; // Enlazamos el nodo anterior con el siguiente
+void gestionarComunicaciones() {
+    signal(SIGINT, manejador_sigint);
+    printf("Iniciando gestión de comunicaciones...\n");
+    
+    int fdPSC;
+    fd_set readfds;
+    struct timeval tv;
+    
+    while (seguirEjecutando) {
+        fdPSC = open(pipePublicador, O_RDONLY | O_NONBLOCK);
+        if (fdPSC < 0) {
+            if (errno == EINTR) {
+                continue;
             }
-
-            // Eliminamos el pipe asociado al suscriptor
-            char pipeName[100];
-            sprintf(pipeName, "pipe_suscriptor_%d", id);
-            unlink(pipeName);
-
-            // Liberamos la memoria del nodo eliminado
-            free(actual);
-
-            printf("Suscripción eliminada con éxito.\n");
-            return;
+            perror("Error al abrir pipe PSC");
+            break;
         }
 
-        anterior = actual; // Avanzamos al siguiente nodo
-        actual = actual->siguiente;
+        while (seguirEjecutando) {
+            FD_ZERO(&readfds);
+            FD_SET(fdPSC, &readfds);
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+
+            int resultado = select(fdPSC + 1, &readfds, NULL, NULL, &tv);
+            
+            if (resultado > 0) {
+                Noticia noticia;
+                ssize_t bytesLeidos = read(fdPSC, &noticia, sizeof(Noticia));
+                
+                if (bytesLeidos == sizeof(Noticia)) {
+                    printf("Recibida noticia tipo %c: %s\n", noticia.tipo, noticia.texto);
+                    agregarNoticia(&noticia);
+                    reenviarNoticiasASuscriptores();
+                } else if (bytesLeidos == 0) {
+                    printf("Pipe cerrado por el publicador. Esperando nuevas conexiones...\n");
+                    break;
+                }
+            } else if (resultado == 0) {
+                // Timeout - verificar si hay noticias pendientes para reenviar
+                reenviarNoticiasASuscriptores();
+            } else if (errno != EINTR) {
+                perror("Error en select");
+                break;
+            }
+        }
+        
+        close(fdPSC);
+    }
+}
+
+void finalizarSistema() {
+    printf("\nFinalizando sistema de comunicaciones...\n");
+    unlink(pipePublicador);
+    unlink(pipeSuscriptor);
+    printf("Sistema finalizado correctamente.\n");
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 7 || strcmp(argv[1], "-p") != 0 || 
+        strcmp(argv[3], "-s") != 0 || strcmp(argv[5], "-t") != 0) {
+        fprintf(stderr, "Uso: %s -p pipePSC -s pipeSSC -t timeF\n", argv[0]);
+        exit(EXIT_FAILURE);
     }
 
-    // Si llegamos al final de la lista sin encontrar el nodo, el suscriptor no existe
-    printf("Suscriptor no encontrado.\n");
+    int tiempoEspera = atoi(argv[6]);
+    if (tiempoEspera < 0) {
+        fprintf(stderr, "El tiempo de espera no puede ser negativo\n");
+        exit(EXIT_FAILURE);
+    }
+
+    inicializarSistema(argv[2], argv[4], tiempoEspera);
+    gestionarComunicaciones();
+    finalizarSistema();
+    return 0;
 }

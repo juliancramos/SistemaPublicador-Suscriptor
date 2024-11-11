@@ -4,31 +4,71 @@
 #include <ctype.h>
 
 int validarFormatoNoticia(const char *linea) {
-    if (strlen(linea) < 4 || linea[1] != ':') {
-        return 0; // Formato inválido
+    printf("Línea recibida: '%s'\n", linea);
+
+    // Crear una copia para manipular la línea
+    char copia[100];
+    strncpy(copia, linea, sizeof(copia) - 1);
+    copia[sizeof(copia) - 1] = '\0';
+
+    // Eliminar espacios al inicio y al final
+    char *inicio = copia;
+    while (isspace(*inicio)) inicio++;
+    char *fin = inicio + strlen(inicio) - 1;
+    while (fin > inicio && isspace(*fin)) fin--;
+    *(fin + 1) = '\0'; // Termina la cadena limpiada
+
+    printf("Línea después de limpiar espacios: '%s'\n", inicio);
+
+    // Verificar longitud mínima (tipo:texto.)
+    if (strlen(inicio) < 4) {
+        printf("Error: Longitud mínima no cumplida.\n");
+        return 0;
     }
 
-    char tipo = linea[0];
-    if (tipo != 'A' && tipo != 'E' && tipo != 'C' && tipo != 'P' && tipo != 'S') {
-        return 0; // Tipo de noticia inválido
+    // Verificar formato "X: texto."
+    if (inicio[1] != ':') {
+        printf("Error: Formato de tipo de noticia incorrecto.\n");
+        return 0;
     }
 
-    if (linea[strlen(linea) - 1] != '.') {
-        return 0; // Debe terminar con un punto
+    // Verificar que el primer carácter es uno de los tipos permitidos
+    char tipo = toupper(inicio[0]);
+    if (strchr("AECPS", tipo) == NULL) {
+        printf("Error: Tipo de noticia no válido.\n");
+        return 0;
     }
 
-    return 1; // Formato válido
+    // Verificar que la línea termine en un punto
+    if (inicio[strlen(inicio) - 1] != '.') {
+        printf("Error: La línea no termina en punto.\n");
+        return 0;
+    }
+
+    // Verificar longitud máxima de 80 caracteres para el contenido de la noticia
+    if (strlen(inicio) > 83) {
+        printf("Error: Longitud máxima excedida.\n");
+        return 0;
+    }
+
+    return 1;
 }
+
 
 Noticia crearNoticia(const char *linea) {
     Noticia noticia;
-    if (validarFormatoNoticia(linea)) {
-        noticia.tipo = linea[0];
-        strncpy(noticia.texto, linea + 2, sizeof(noticia.texto) - 1);
-        noticia.texto[sizeof(noticia.texto) - 1] = '\0'; // Asegura el fin de la cadena
-    } else {
-        noticia.tipo = '\0'; // Indica un tipo inválido
-        strcpy(noticia.texto, "Formato de noticia inválido.");
+    memset(&noticia, 0, sizeof(Noticia)); // Inicializar estructura
+
+    if (!validarFormatoNoticia(linea)) {
+        noticia.tipo = 'X'; // Marca de error
+        strncpy(noticia.texto, "Error: Formato inválido", sizeof(noticia.texto) - 1);
+        return noticia;
     }
+
+    noticia.tipo = toupper(linea[0]);
+    // Copiar el texto después de "X: "
+    strncpy(noticia.texto, linea + 3, sizeof(noticia.texto) - 1);
+    noticia.texto[sizeof(noticia.texto) - 1] = '\0';
+
     return noticia;
 }
