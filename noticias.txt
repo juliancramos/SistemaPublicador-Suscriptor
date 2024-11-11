@@ -1,0 +1,5 @@
+A: Noticia tipo A
+E: Noticia tipo E
+C: Noticia tipo C
+P: Noticia tipo P
+S: Noticia tipo S
