@@ -1,21 +1,29 @@
-# Variables
 CC = gcc
-CFLAGS = -Wall -Wextra -O2
-SOURCES = main.c publicador.c sistemaComunicaciones.c suscriptor.c noticia.c
-OBJECTS = $(SOURCES:.c=.o)
-EXEC = sistema publicador suscriptor
+CFLAGS = -Wall -Wextra -Wno-unused-parameter
 
-# Regla por defecto
-all: $(EXEC)
+SOURCES = noticia.c
+HEADERS = noticia.h
 
-# Regla para compilar
-$(EXEC): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $@ $^
+PUBLICADOR = publicador
+SUSCRIPTOR = suscriptor
+SISTEMA_PUB_SUB = sistema_pub_sub
 
-# Regla para compilar archivos .o
-%.o: %.c
-	$(CC) $(CFLAGS) -c $<
+PUBLICADOR_SOURCES = $(SOURCES) publicador.c
+SUSCRIPTOR_SOURCES = $(SOURCES) suscriptor.c
+SISTEMA_PUB_SUB_SOURCES = $(SOURCES) sistemaComunicaciones.c
 
-# Limpiar los archivos generados
+all: $(PUBLICADOR) $(SUSCRIPTOR) $(SISTEMA_PUB_SUB)
+
+$(PUBLICADOR): $(PUBLICADOR_SOURCES) $(HEADERS)
+	$(CC) $(CFLAGS) -o $(PUBLICADOR) $(PUBLICADOR_SOURCES)
+
+$(SUSCRIPTOR): $(SUSCRIPTOR_SOURCES) $(HEADERS) 
+	$(CC) $(CFLAGS) -o $(SUSCRIPTOR) $(SUSCRIPTOR_SOURCES)
+
+$(SISTEMA_PUB_SUB): $(SISTEMA_PUB_SUB_SOURCES) $(HEADERS)
+	$(CC) $(CFLAGS) -o $(SISTEMA_PUB_SUB) $(SISTEMA_PUB_SUB_SOURCES)
+
 clean:
-	rm -f $(OBJECTS) $(EXEC)
+	rm -f $(PUBLICADOR) $(SUSCRIPTOR) $(SISTEMA_PUB_SUB)
+
+.PHONY: all clean

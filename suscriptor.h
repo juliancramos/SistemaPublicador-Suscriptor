@@ -1,19 +1,18 @@
 #ifndef SUSCRIPTOR_H
 #define SUSCRIPTOR_H
 
+#include "noticia.h"
+
 #define MAX_TOPICOS 5
-#define MAX_TOPICO_LENGTH 10
+#define MAX_TOPICO_LENGTH 2
+#define MAX_MENSAJE_LENGTH 81
 
-#include <string.h> // Para usar funciones de cadenas
-
-// Definición de la estructura Suscriptor
 typedef struct {
-    char pipeSSC[50];
+    char pipeSSC[256];
     char topicos[MAX_TOPICOS][MAX_TOPICO_LENGTH];
     int numTopicos;
 } Suscriptor;
 
-// Prototipos de funciones
 void inicializarSuscriptor(Suscriptor *suscriptor, const char *pipe);
 void enviarSuscripciones(Suscriptor *suscriptor);
 void recibirNoticias(Suscriptor *suscriptor);
