@@ -72,3 +72,9 @@ Noticia crearNoticia(const char *linea) {
 
     return noticia;
 }
+
+void noticiabufferToNoticia(const NoticiaBuffer *noticiabuffer, Noticia *noticia) {
+    noticia->tipo = noticiabuffer->tipo;
+    strncpy(noticia->texto, noticiabuffer->texto, sizeof(noticia->texto) - 1);
+    noticia->texto[sizeof(noticia->texto) - 1] = '\0';
+}

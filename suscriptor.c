@@ -119,56 +119,47 @@ void recibirNoticias(Suscriptor *suscriptor) {
     printf("\nEsperando noticias...\n");
     printf("Presione Ctrl+C para salir\n\n");
 
-    int fdPipe;
-    fd_set readfds;
-    struct timeval tv;
-    
     while (seguirEjecutando) {
-        fdPipe = open(suscriptor->pipeSSC, O_RDONLY | O_NONBLOCK);
+        int fdPipe = open(suscriptor->pipeSSC, O_RDONLY | O_NONBLOCK);
         if (fdPipe < 0) {
             if (errno == EINTR) {
                 continue;
             }
             perror("Error al abrir el pipe para lectura");
-            exit(EXIT_FAILURE);
+            sleep(1);
+            continue;
         }
 
-        while (seguirEjecutando) {
-            FD_ZERO(&readfds);
-            FD_SET(fdPipe, &readfds);
-            tv.tv_sec = 1;
-            tv.tv_usec = 0;
+        fd_set readfds;
+        struct timeval tv;
+        
+        FD_ZERO(&readfds);
+        FD_SET(fdPipe, &readfds);
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
 
-            int resultado = select(fdPipe + 1, &readfds, NULL, NULL, &tv);
+        int resultado = select(fdPipe + 1, &readfds, NULL, NULL, &tv);
+        
+        if (resultado > 0) {
+            Noticia noticia;
+            ssize_t bytesLeidos = read(fdPipe, &noticia, sizeof(Noticia));
             
-            if (resultado > 0) {
-                Noticia noticia;
-                ssize_t bytesLeidos = read(fdPipe, &noticia, sizeof(Noticia));
-                
-                if (bytesLeidos == sizeof(Noticia)) {
-                    for (int i = 0; i < suscriptor->numTopicos; i++) {
-                        if (suscriptor->topicos[i][0] == noticia.tipo) {
-                            time_t ahora = time(NULL);
-                            struct tm *tiempo = localtime(&ahora);
-                            printf("[%02d:%02d:%02d] [%c]: %s\n",
-                                tiempo->tm_hour, tiempo->tm_min, tiempo->tm_sec,
-                                noticia.tipo, noticia.texto);
-                            break;
-                        }
+            if (bytesLeidos == sizeof(Noticia)) {
+                for (int i = 0; i < suscriptor->numTopicos; i++) {
+                    if (suscriptor->topicos[i][0] == noticia.tipo) {
+                        time_t ahora = time(NULL);
+                        struct tm *tiempo = localtime(&ahora);
+                        printf("[%02d:%02d:%02d] [%c]: %s\n",
+                            tiempo->tm_hour, tiempo->tm_min, tiempo->tm_sec,
+                            noticia.tipo, noticia.texto);
+                        break;
                     }
-                } else if (bytesLeidos == 0) {
-                    break;
                 }
-            } else if (resultado < 0 && errno != EINTR) {
-                perror("Error en select");
-                break;
             }
         }
         
         close(fdPipe);
-        if (seguirEjecutando) {
-            sleep(1);  // Esperar antes de reintentar
-        }
+        usleep(100000); // Esperar 100ms antes de reintentar
     }
     
     printf("\nFinalizando suscriptor...\n");

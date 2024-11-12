@@ -11,12 +11,7 @@
 
 #define MAX_BUFFER_NOTICIAS 100
 
-typedef struct {
-    Noticia noticias[MAX_BUFFER_NOTICIAS];
-    int inicio;
-    int fin;
-    int contador;
-} BufferCircular;
+
 
 static char pipePublicador[256];
 static char pipeSuscriptor[256];
@@ -35,17 +30,31 @@ void inicializarBuffer() {
 }
 
 void agregarNoticia(const Noticia *noticia) {
-    if (buffer.contador < MAX_BUFFER_NOTICIAS) {
-        buffer.noticias[buffer.fin] = *noticia;
-        buffer.fin = (buffer.fin + 1) % MAX_BUFFER_NOTICIAS;
+    if (buffer.contador < MAX_NOTICIAS_BUFFER) {
+        buffer.noticias[buffer.fin].tipo = noticia->tipo;
+        strncpy(buffer.noticias[buffer.fin].texto, noticia->texto, sizeof(buffer.noticias[buffer.fin].texto) - 1);
+        buffer.noticias[buffer.fin].texto[sizeof(buffer.noticias[buffer.fin].texto) - 1] = '\0';
+        buffer.noticias[buffer.fin].enviada = 0;  // Nueva noticia, no enviada
+        buffer.fin = (buffer.fin + 1) % MAX_NOTICIAS_BUFFER;
+        buffer.contador++;
+    } else {
+        // Si el buffer está lleno, hacer espacio eliminando la noticia más antigua
+        buffer.inicio = (buffer.inicio + 1) % MAX_NOTICIAS_BUFFER;
+        buffer.contador--;
+        // Y luego agregar la nueva noticia
+        buffer.noticias[buffer.fin].tipo = noticia->tipo;
+        strncpy(buffer.noticias[buffer.fin].texto, noticia->texto, sizeof(buffer.noticias[buffer.fin].texto) - 1);
+        buffer.noticias[buffer.fin].texto[sizeof(buffer.noticias[buffer.fin].texto) - 1] = '\0';
+        buffer.noticias[buffer.fin].enviada = 0;
+        buffer.fin = (buffer.fin + 1) % MAX_NOTICIAS_BUFFER;
         buffer.contador++;
     }
 }
 
 int obtenerNoticia(Noticia *noticia) {
     if (buffer.contador > 0) {
-        *noticia = buffer.noticias[buffer.inicio];
-        buffer.inicio = (buffer.inicio + 1) % MAX_BUFFER_NOTICIAS;
+        noticiabufferToNoticia(&buffer.noticias[buffer.inicio], noticia);
+        buffer.inicio = (buffer.inicio + 1) % MAX_NOTICIAS_BUFFER;
         buffer.contador--;
         return 1;
     }
@@ -82,20 +91,57 @@ void inicializarSistema(const char *pipePSC, const char *pipeSSC, int tiempoEspe
 }
 
 void reenviarNoticiasASuscriptores() {
+    static int intentosEnvio = 0;
+    const int MAX_INTENTOS_POR_NOTICIA = 5;
+    
+    // Abrir el pipe para escritura
     int fdSSC = open(pipeSuscriptor, O_WRONLY | O_NONBLOCK);
-    if (fdSSC >= 0) {
-        Noticia noticia;
-        while (obtenerNoticia(&noticia)) {
+    if (fdSSC < 0) {
+        return;  // Si no hay suscriptores, simplemente retornamos
+    }
+
+    // Recorrer el buffer y enviar las noticias no enviadas
+    int i = buffer.inicio;
+    int noticiasRestantes = buffer.contador;
+    
+    while (noticiasRestantes > 0 && seguirEjecutando) {
+        if (!buffer.noticias[i].enviada) {
+            Noticia noticia;
+            noticiabufferToNoticia(&buffer.noticias[i], &noticia);
             ssize_t bytesEscritos = write(fdSSC, &noticia, sizeof(Noticia));
+            
             if (bytesEscritos == sizeof(Noticia)) {
-                printf("Reenviada noticia [%c]: %s\n", noticia.tipo, noticia.texto);
+                printf("Noticia reenviada [%c]: %s\n", 
+                       buffer.noticias[i].tipo,
+                        buffer.noticias[i].texto);
+                       
+                buffer.noticias[i].enviada = 1;  // Marcar como enviada
+                intentosEnvio = 0;
+                
                 if (tiempoForward > 0) {
                     sleep(tiempoForward);
                 }
+            } else {
+                intentosEnvio++;
+                if (intentosEnvio >= MAX_INTENTOS_POR_NOTICIA) {
+                    buffer.noticias[i].enviada = 1;  // Marcar como enviada después de máximos intentos
+                    intentosEnvio = 0;
+                }
+                break;  // Salir del bucle si hay error de escritura
             }
         }
-        close(fdSSC);
+        
+        i = (i + 1) % MAX_NOTICIAS_BUFFER;
+        noticiasRestantes--;
     }
+    
+    // Limpiar noticias enviadas del buffer
+    while (buffer.contador > 0 && buffer.noticias[buffer.inicio].enviada) {
+        buffer.inicio = (buffer.inicio + 1) % MAX_NOTICIAS_BUFFER;
+        buffer.contador--;
+    }
+    
+    close(fdSSC);
 }
 
 void gestionarComunicaciones() {
@@ -109,18 +155,17 @@ void gestionarComunicaciones() {
     while (seguirEjecutando) {
         fdPSC = open(pipePublicador, O_RDONLY | O_NONBLOCK);
         if (fdPSC < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
+            if (errno == EINTR) continue;
             perror("Error al abrir pipe PSC");
-            break;
+            sleep(1);
+            continue;
         }
 
         while (seguirEjecutando) {
             FD_ZERO(&readfds);
             FD_SET(fdPSC, &readfds);
-            tv.tv_sec = 1;
-            tv.tv_usec = 0;
+            tv.tv_sec = 0;  // Reducir el tiempo de espera
+            tv.tv_usec = 100000;  // 100ms
 
             int resultado = select(fdPSC + 1, &readfds, NULL, NULL, &tv);
             
@@ -131,18 +176,13 @@ void gestionarComunicaciones() {
                 if (bytesLeidos == sizeof(Noticia)) {
                     printf("Recibida noticia tipo %c: %s\n", noticia.tipo, noticia.texto);
                     agregarNoticia(&noticia);
-                    reenviarNoticiasASuscriptores();
                 } else if (bytesLeidos == 0) {
-                    printf("Pipe cerrado por el publicador. Esperando nuevas conexiones...\n");
                     break;
                 }
-            } else if (resultado == 0) {
-                // Timeout - verificar si hay noticias pendientes para reenviar
-                reenviarNoticiasASuscriptores();
-            } else if (errno != EINTR) {
-                perror("Error en select");
-                break;
             }
+            
+            // Reenviar más frecuentemente
+            reenviarNoticiasASuscriptores();
         }
         
         close(fdPSC);
